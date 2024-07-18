@@ -44,8 +44,8 @@ def rand_bbox(size, lam):
     W = size[2]
     H = size[3]
     cut_rat = np.sqrt(1. - lam)
-    cut_w = np.int(W * cut_rat)
-    cut_h = np.int(H * cut_rat)
+    cut_w = int(W * cut_rat)
+    cut_h = int(H * cut_rat)
 
     # uniform
     cx = np.random.randint(W)
@@ -85,7 +85,7 @@ class LV_ViT(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., drop_path_decay='linear', hybrid_backbone=None, norm_layer=nn.LayerNorm, p_emb='4_2', head_dim = None,
-                 skip_lam = 1.0,order=None, mix_token=False, return_dense=False):
+                 skip_lam = 1.0,order=None, mix_token=False, return_dense=False, **kwargs):
         super().__init__()
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
@@ -222,7 +222,7 @@ class LV_ViT(nn.Module):
         return x_cls
 
 @register_model
-def vit(pretrained=False, **kwargs):
+def vit(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = LV_ViT(patch_size=16, embed_dim=384, depth=16, num_heads=6, mlp_ratio=3.,
         p_emb=1, **kwargs)
     model.default_cfg = default_cfgs['LV_ViT']
@@ -230,29 +230,29 @@ def vit(pretrained=False, **kwargs):
 
 
 @register_model
-def lvvit(pretrained=False, **kwargs):
+def lvvit(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = LV_ViT(patch_size=16, embed_dim=384, depth=16, num_heads=6, mlp_ratio=3.,
         p_emb='4_2',skip_lam=2., **kwargs)
     model.default_cfg = default_cfgs['LV_ViT']
     return model
 
 @register_model
-def lvvit_t(pretrained=False, **kwargs):
+def lvvit_t(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = LV_ViT(patch_size=16, embed_dim=240, depth=12, num_heads=4, mlp_ratio=3.,
-        p_emb='4_2',skip_lam=1., return_dense=True,mix_token=True, **kwargs)
+        p_emb='4_2', skip_lam=1., return_dense=True, mix_token=True, **kwargs)
     model.default_cfg = default_cfgs['LV_ViT_Tiny']
     return model
 
 
 @register_model
-def lvvit_s(pretrained=False, **kwargs):
+def lvvit_s(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = LV_ViT(patch_size=16, embed_dim=384, depth=16, num_heads=6, mlp_ratio=3.,
-        p_emb='4_2',skip_lam=2., return_dense=True,mix_token=True, **kwargs)
+        p_emb='4_2', skip_lam=2., return_dense=True, mix_token=True, **kwargs)
     model.default_cfg = default_cfgs['LV_ViT']
     return model
 
 @register_model
-def lvvit_m(pretrained=False, **kwargs):
+def lvvit_m(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = LV_ViT(patch_size=16, embed_dim=512, depth=20, num_heads=8, mlp_ratio=3.,
         p_emb='4_2',skip_lam=2., return_dense=True,mix_token=True, **kwargs)
     model.default_cfg = default_cfgs['LV_ViT_Medium']
@@ -260,7 +260,7 @@ def lvvit_m(pretrained=False, **kwargs):
 
 
 @register_model
-def lvvit_l(pretrained=False, **kwargs):
+def lvvit_l(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     order = ['tr']*24 # this will override depth, can also be set as None
     model = LV_ViT(patch_size=16, embed_dim=768,depth=24, num_heads=12, mlp_ratio=3.,
         p_emb='4_2_128',skip_lam=3., return_dense=True,mix_token=True, order=order, **kwargs)

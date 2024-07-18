@@ -42,33 +42,162 @@ class GroupLinear(nn.Module):
         if self.bias is None:
             s += ', bias=False'
         return s.format(**self.__dict__)
-
-
+        
+        
+        
 class Mlp(nn.Module):
-    '''
-    MLP with support to use group linear operator
-    '''
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0., group=1):
+    """ MLP as used in Vision Transformer, MLP-Mixer and related networks
+    """
+    def __init__(
+            self,
+            dim_in,
+            dim_hidden=None,
+            dim_out=None,
+            bias=True,
+            drop_path=0.,
+            channel_idle=True,
+            act_layer=nn.GELU,
+            feature_norm="BatchNorm",
+            skip_lam=1.0):
+            
         super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        if group==1:
-            self.fc1 = nn.Linear(in_features, hidden_features)
-            self.fc2 = nn.Linear(hidden_features, out_features)
-        else:
-            self.fc1 = GroupLinear(in_features, hidden_features,group)
-            self.fc2 = GroupLinear(hidden_features, out_features,group)
+        
+        ######################## ↓↓↓↓↓↓ ########################
+        # Hyperparameters
+        self.dim_in = dim_in
+        self.dim_hidden = dim_hidden or dim_in
+        self.dim_out = dim_out or dim_in
+        self.skip_lam = skip_lam
+        ######################## ↑↑↑↑↑↑ ########################
+        
+        ######################## ↓↓↓↓↓↓ ########################
+        # Self-attention projections
+        self.fc1 = nn.Linear(self.dim_in, self.dim_hidden)
+        self.fc2 = nn.Linear(self.dim_hidden, self.dim_out)
         self.act = act_layer()
-
-        self.drop = nn.Dropout(drop)
-
+        ######################## ↑↑↑↑↑↑ ########################
+        
+        ######################## ↓↓↓↓↓↓ ########################
+        # Channel-idle
+        self.channel_idle = channel_idle
+        self.act_channels = dim_in
+        ######################## ↑↑↑↑↑↑ ########################
+        
+        ######################## ↓↓↓↓↓↓ ########################
+        self.feature_norm = feature_norm
+        if self.feature_norm == "LayerNorm":
+            self.norm = nn.LayerNorm(self.dim_in)
+        elif self.feature_norm == "BatchNorm":
+            self.norm1 = nn.BatchNorm1d(self.dim_in)
+            self.norm2 = nn.BatchNorm1d(self.dim_hidden)
+        ######################## ↑↑↑↑↑↑ ########################
+        
+        ######################## ↓↓↓↓↓↓ ########################
+        # Drop path
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else None
+        ######################## ↑↑↑↑↑↑ ########################
+        
     def forward(self, x):
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
+        B, N, C = x.shape
+        ######################## ↓↓↓ 2-layer MLP ↓↓↓ ########################
+        shortcut = x # B, N, C
+        
+        # add skip_lam
+        x = x * self.skip_lam
+        
+        # 1st Feature normalization
+        if self.feature_norm == "LayerNorm":
+            x = self.norm(x)
+        elif self.feature_norm == "BatchNorm":
+            x = self.norm1(x.transpose(-1,-2)).transpose(-1, -2)
+        
+        # FFN in
+        x = self.fc1(x) # B, N, 4C
+        
+        # Activation
+        if self.channel_idle:
+            mask = torch.zeros_like(x, dtype=torch.bool)
+            mask[:, :, :self.act_channels] = True
+            x = torch.where(mask, self.act(x), x)
+        else:
+            x = self.act(x)
+        
+        # 2nd Feature normalization
+        if self.feature_norm == "BatchNorm":
+            x = self.norm2(x.transpose(-1,-2)).transpose(-1, -2)
+            
+        # FFN out
         x = self.fc2(x)
-        x = self.drop(x)
+        
+        # Add DropPath
+        x = self.drop_path(x) if self.drop_path is not None else x
+        
+        # add skip_lam
+        x = x / self.skip_lam
+        
+        x = x + shortcut
+        ######################## ↑↑↑ 2-layer MLP ↑↑↑ ########################
+        #if x.get_device() == 0:
+            #print("x after ffn:", x.std(-1).mean().item(), x.mean().item(), x.max().item(), x.min().item())
         return x
+        
+    def reparam(self):
+        self.eval()
+        with torch.no_grad():
+            mean = self.norm1.running_mean
+            std = torch.sqrt(self.norm1.running_var + self.norm1.eps)
+            weight = self.norm1.weight
+            bias = self.norm1.bias
+            
+            fc1_bias = self.fc1(-mean/std*weight+bias)
+            fc1_weight = self.fc1.weight / std[None, :] * weight[None, :]
+            
+            mean = self.norm2.running_mean
+            std = torch.sqrt(self.norm2.running_var + self.norm2.eps)
+            weight = self.norm2.weight
+            bias = self.norm2.bias
+            
+            fc2_bias = self.fc2(-mean/std*weight+bias)
+            fc2_weight = self.fc2.weight / std[None, :] * weight[None, :]
+        
+        return fc1_bias, fc1_weight, fc2_bias, fc2_weight
+        
+        
+
+class RePaMlp(nn.Module):
+    def __init__(self, 
+                 fc1_bias, 
+                 fc1_weight, 
+                 fc2_bias, 
+                 fc2_weight, 
+                 act_layer):
+        super().__init__()
+        
+        dim = fc1_weight.shape[1]
+        self.fc1 = nn.Linear(dim, dim)
+        self.fc2 = nn.Linear(dim, dim)
+        self.fc3 = nn.Linear(dim, dim, bias=False)
+        self.act = act_layer()
+        
+        with torch.no_grad():
+            weight1 = fc1_weight[dim:, :].T @ fc2_weight[:, dim:].T + torch.eye(dim).to(fc1_weight.device)
+            weight2 = fc1_weight[:dim, :]
+            weight3 = fc2_weight[:, :dim] 
+            bias1 = (fc1_bias[dim:].unsqueeze(0) @ fc2_weight[:, dim:].T).squeeze() + fc2_bias
+            bias2 = fc1_bias[:dim]
+            
+            self.fc1.weight.copy_(weight1.T)
+            self.fc1.bias.copy_(bias1)
+            self.fc2.weight.copy_(weight2)
+            self.fc2.bias.copy_(bias2)
+            self.fc3.weight.copy_(weight3)
+        
+    def forward(self, x):
+        with torch.no_grad():
+            x = self.fc3(self.act(self.fc2(x))) + self.fc1(x)
+            return x        
+        
+        
 
 class GroupNorm(nn.Module):
     def __init__(self, num_groups, embed_dim, eps=1e-5, affine=True):
@@ -81,6 +210,7 @@ class GroupNorm(nn.Module):
         x = self.gn(x)
         x = x.view(B,T,C)
         return x
+
 
 
 class Attention(nn.Module):
@@ -144,12 +274,11 @@ class Block(nn.Module):
         self.attn = Attention(
             dim, num_heads=num_heads, head_dim=head_dim, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.norm2 = norm_layer(dim)
-        self.mlp = Mlp(in_features=dim, hidden_features=self.mlp_hidden_dim, act_layer=act_layer, drop=drop, group=group)
+        self.mlp = Mlp(dim_in=dim, dim_hidden=self.mlp_hidden_dim, act_layer=act_layer, drop_path=drop_path, skip_lam=self.skip_lam)
 
     def forward(self, x, padding_mask=None):
         x = x + self.drop_path(self.attn(self.norm1(x),padding_mask))/self.skip_lam
-        x = x + self.drop_path(self.mlp(self.norm2(x)))/self.skip_lam
+        x = self.mlp(x)
         return x
 
     def flops(self, s):
@@ -229,9 +358,9 @@ class FFNBlock(nn.Module):
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
-        self.mlp = Mlp(in_features=dim, hidden_features=self.mlp_hidden_dim, act_layer=act_layer, drop=drop, group=group)
+        self.mlp = Mlp(dim_in=dim, dim_hidden=self.mlp_hidden_dim, act_layer=act_layer, drop_path=drop_path, skip_lam=self.skip_lam)
     def forward(self, x):
-        x = x + self.drop_path(self.mlp(self.norm2(x*self.skip_lam)))/self.skip_lam
+        x = self.mlp(x)
         return x
     def flops(self, s):
         heads = self.attn.num_heads
