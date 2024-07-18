@@ -341,9 +341,9 @@ def main():
     torch.cuda.set_device(args.gpu)
     args.dist_backend = 'nccl'
     print('| distributed init (rank {}): {}'.format(
-        args.rank, args.dist_url), flush=True)
+        args.rank, 'env://'), flush=True)
     
-    torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
+    torch.distributed.init_process_group(backend=args.dist_backend, init_method='env://',
                                          world_size=args.world_size, rank=args.rank,
                                          timeout=timedelta(minutes=30))
     torch.distributed.barrier()
