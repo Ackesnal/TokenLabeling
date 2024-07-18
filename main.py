@@ -344,10 +344,9 @@ def main():
         args.rank, 'env://'), flush=True)
     
     torch.distributed.init_process_group(backend=args.dist_backend, init_method='env://',
-                                         world_size=args.world_size, rank=args.rank,
-                                         timeout=timedelta(minutes=30))
+                                         world_size=args.world_size, rank=args.rank)
     torch.distributed.barrier()
-    setup_for_distributed(args.rank == 0)
+    #setup_for_distributed(args.rank == 0)
     
     """
     else:
