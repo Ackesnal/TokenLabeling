@@ -169,6 +169,7 @@ class LV_ViT(nn.Module):
     def forward_embeddings(self,x):
         x = self.patch_embed(x)
         return x
+        
     def forward_tokens(self, x):
         B = x.shape[0]
         cls_tokens = self.cls_token.expand(B, -1, -1)
@@ -222,8 +223,10 @@ class LV_ViT(nn.Module):
             return x_cls, x_aux, (bbx1, bby1, bbx2, bby2)
         return x_cls
         
-    def reparam(self, x):
-        print("yes\n")
+    def reparam(self):
+        for blk in self.blocks:
+            blk.reparam()
+            
     
 @register_model
 def vit(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):

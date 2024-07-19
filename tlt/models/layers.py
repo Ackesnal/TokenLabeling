@@ -270,7 +270,7 @@ class Block(nn.Module):
         self.dim = dim
         self.mlp_hidden_dim = int(dim * mlp_ratio)
         self.skip_lam = skip_lam
-
+        self.act_layer = act_layer
         self.norm1 = norm_layer(dim)
         self.attn = Attention(
             dim, num_heads=num_heads, head_dim=head_dim, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
@@ -282,6 +282,12 @@ class Block(nn.Module):
         x = x + self.drop_path(self.attn(self.norm1(x),padding_mask))/self.skip_lam
         x = self.mlp(x)
         return x
+        
+    def reparam(self):
+        fc1_bias, fc1_weight, fc2_bias, fc2_weight = self.mlp.reparam()
+        del self.mlp
+        self.mlp = RePaMlp(fc1_bias, fc1_weight, fc2_bias, fc2_weight, self.act_layer)
+        return
 
     def flops(self, s):
         heads = self.attn.num_heads
