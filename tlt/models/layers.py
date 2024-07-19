@@ -264,7 +264,8 @@ class Block(nn.Module):
     Pre-layernorm transformer block
     '''
     def __init__(self, dim, num_heads, head_dim=None, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, group=1, skip_lam=1.):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, group=1, skip_lam=1.,
+                 channel_idle=False, feature_norm="LayerNorm"):
         super().__init__()
         self.dim = dim
         self.mlp_hidden_dim = int(dim * mlp_ratio)
@@ -274,7 +275,8 @@ class Block(nn.Module):
         self.attn = Attention(
             dim, num_heads=num_heads, head_dim=head_dim, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.mlp = Mlp(dim_in=dim, dim_hidden=self.mlp_hidden_dim, act_layer=act_layer, drop_path=drop_path, skip_lam=self.skip_lam)
+        self.mlp = Mlp(dim_in=dim, dim_hidden=self.mlp_hidden_dim, act_layer=act_layer, drop_path=drop_path, skip_lam=self.skip_lam,
+                       channel_idle=channel_idle, feature_norm=feature_norm)
 
     def forward(self, x, padding_mask=None):
         x = x + self.drop_path(self.attn(self.norm1(x),padding_mask))/self.skip_lam

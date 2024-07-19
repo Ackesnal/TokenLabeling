@@ -85,7 +85,7 @@ class LV_ViT(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., drop_path_decay='linear', hybrid_backbone=None, norm_layer=nn.LayerNorm, p_emb='4_2', head_dim = None,
-                 skip_lam = 1.0,order=None, mix_token=False, return_dense=False, **kwargs):
+                 skip_lam = 1.0,order=None, mix_token=False, return_dense=False, channel_idle=False, feature_norm="LayerNorm", **kwargs):
         super().__init__()
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
@@ -114,7 +114,8 @@ class LV_ViT(nn.Module):
             self.blocks = nn.ModuleList([
                 Block(
                     dim=embed_dim, num_heads=num_heads, head_dim=head_dim, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
-                    drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, skip_lam=skip_lam)
+                    drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, skip_lam=skip_lam,
+                    channel_idle=channel_idle, feature_norm=feature_norm)
                 for i in range(depth)])
         else:
             # use given order to sequentially generate modules
@@ -220,7 +221,10 @@ class LV_ViT(nn.Module):
 
             return x_cls, x_aux, (bbx1, bby1, bbx2, bby2)
         return x_cls
-
+        
+    def reparam(self, x):
+        print("yes\n")
+    
 @register_model
 def vit(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
     model = LV_ViT(patch_size=16, embed_dim=384, depth=16, num_heads=6, mlp_ratio=3.,
