@@ -30,6 +30,7 @@ from tlt.data import create_token_label_target, TokenLabelMixup, FastCollateToke
 from tlt.loss import TokenLabelCrossEntropy, TokenLabelSoftTargetCrossEntropy
 from tlt.utils import load_pretrained_weights
 
+from ptflops import get_model_complexity_info
 
 try:
     from apex import amp
@@ -278,6 +279,11 @@ parser.add_argument('--ground-truth', action='store_true', default=False,
                     help='Use ground truth label to help refine generated target label')
 
 
+parser.add_argument('--channel_idle', default=False, action='store_true')
+parser.add_argument('--feature_norm', default='LayerNorm', type=str, choices=['LayerNorm', 'BatchNorm', 'EmpiricalSTD', 'None'])
+parser.add_argument('--reparam', default=False, action='store_true')
+parser.add_argument('--test_speed', action='store_true')
+parser.add_argument('--only_test_speed', action='store_true')     
 # Finetune
 parser.add_argument('--finetune', default='', type=str, metavar='PATH',
                     help='path to checkpoint file (default: none)')
@@ -312,6 +318,35 @@ def setup_for_distributed(is_master):
             builtin_print(*args, **kwargs)
 
     __builtin__.print = print
+    
+    
+def get_macs(model, x=None):
+    macs, params = get_model_complexity_info(model, (3, 224, 224), print_per_layer_stat=False, as_strings=False)
+    if next(model.parameters()).get_device()==0:
+        print('{:<} {:<}{:<}'.format('Computational complexity: ', round(macs*1e-9, 2), 'GMACs'))
+        print('{:<} {:<}{:<}'.format('Number of parameters: ', round(params*1e-6, 2), 'M'))
+        print()
+
+
+
+def speed_test(model, ntest=100, batchsize=128, x=None, **kwargs):
+    if x is None:
+        x = torch.rand(batchsize, 3, 224, 224).cuda()
+    else:
+        batchsize = x.shape[0]
+    model.eval().cuda()
+
+    start = time.time()
+    with torch.no_grad():
+        for i in range(ntest):
+            model(x, **kwargs)
+    torch.cuda.synchronize()
+    end = time.time()
+
+    elapse = end - start
+    speed = batchsize * ntest / elapse
+
+    return speed
     
     
 def main():
@@ -400,7 +435,9 @@ def main():
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
         checkpoint_path=args.initial_checkpoint,
-        img_size=args.img_size)
+        img_size=args.img_size,
+        channel_idle=args.channel_idle,
+        feature_norm=args.feature_norm,)
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
@@ -408,7 +445,7 @@ def main():
     if args.finetune:
         load_pretrained_weights(model=model,checkpoint_path=args.finetune,use_ema=args.model_ema, strict=False, num_classes=args.num_classes)
 
-    if args.local_rank == 0:
+    if args.local_rank == 0 and args.rank == 0:
         _logger.info('Model %s created, param count: %d' %
                      (args.model, sum([m.numel() for m in model.parameters()])))
 
@@ -429,7 +466,28 @@ def main():
     model.cuda()
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
-
+    
+    if args.test_speed:
+        if args.reparam:
+            print("Reparametering the backbone ...")
+            model.eval()
+            model.reparam()
+            print("...")
+            model.train()
+            print("Reparameterization done!")
+            
+        # test model throughput for three times to ensure accuracy
+        print('Start inference speed testing...')
+        inference_speed = speed_test(model)
+        print('inference_speed (inaccurate):', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        get_macs(model)
+    if args.only_test_speed:
+        return
+    
     # setup synchronized BatchNorm for distributed training
     if args.distributed and args.sync_bn:
         assert not args.split_bn
@@ -438,7 +496,7 @@ def main():
             model = convert_syncbn_model(model)
         else:
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        if args.local_rank == 0:
+        if args.local_rank == 0 and args.rank == 0:
             _logger.info(
                 'Converted model to use Synchronized BatchNorm. WARNING: You may have issues if using '
                 'zero initialized BN layers (enabled by default for ResNets) while sync-bn enabled.')
@@ -457,15 +515,15 @@ def main():
     if use_amp == 'apex':
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
         loss_scaler = ApexScaler()
-        if args.local_rank == 0:
+        if args.local_rank == 0 and args.rank == 0:
             _logger.info('Using NVIDIA APEX AMP. Training in mixed precision.')
     elif use_amp == 'native':
         amp_autocast = torch.cuda.amp.autocast
         loss_scaler = NativeScaler()
-        if args.local_rank == 0:
+        if args.local_rank == 0 and args.rank == 0:
             _logger.info('Using native Torch AMP. Training in mixed precision.')
     else:
-        if args.local_rank == 0:
+        if args.local_rank == 0 and args.rank == 0:
             _logger.info('AMP not enabled. Training in float32.')
 
     # optionally resume from a checkpoint
@@ -475,7 +533,7 @@ def main():
             model, args.resume,
             optimizer=None if args.no_resume_opt else optimizer,
             loss_scaler=None if args.no_resume_opt else loss_scaler,
-            log_info=args.local_rank == 0)
+            log_info=args.local_rank == 0 and args.rank == 0)
 
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None
@@ -490,11 +548,11 @@ def main():
     if args.distributed:
         if has_apex and use_amp != 'native':
             # Apex DDP preferred unless native amp is activated
-            if args.local_rank == 0:
+            if args.local_rank == 0 and args.rank == 0:
                 _logger.info("Using NVIDIA APEX DistributedDataParallel.")
             model = ApexDDP(model, delay_allreduce=True)
         else:
-            if args.local_rank == 0:
+            if args.local_rank == 0 and args.rank == 0:
                 _logger.info("Using native Torch DistributedDataParallel.")
             model = NativeDDP(model, device_ids=[args.local_rank])  # can use device str in Torch >= 1.1
         # NOTE: EMA model does not need to be wrapped by DDP
@@ -510,7 +568,7 @@ def main():
     if lr_scheduler is not None and start_epoch > 0:
         lr_scheduler.step(start_epoch)
 
-    if args.local_rank == 0:
+    if args.local_rank == 0 and args.rank == 0:
         _logger.info('Scheduled epochs: {}'.format(num_epochs))
 
     # create the train and eval datasets
@@ -628,7 +686,7 @@ def main():
     best_epoch = None
     saver = None
     output_dir = ''
-    if args.local_rank == 0:
+    if args.local_rank == 0 and args.rank == 0:
         output_base = args.output if args.output else './output'
         exp_name = '-'.join([
             datetime.now().strftime("%Y%m%d-%H%M%S"),
@@ -656,7 +714,7 @@ def main():
                 amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn, optimizers=optimizers)
 
             if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                if args.local_rank == 0:
+                if args.local_rank == 0 and args.rank == 0:
                     _logger.info("Distributing BatchNorm running means and vars")
                 distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
@@ -770,7 +828,7 @@ def train_one_epoch(
                 reduced_loss = reduce_tensor(loss.data, args.world_size)
                 losses_m.update(reduced_loss.item(), input.size(0))
 
-            if args.local_rank == 0:
+            if args.local_rank == 0 and args.rank == 0:
                 _logger.info(
                     'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
                     'Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  '
@@ -861,7 +919,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
 
             batch_time_m.update(time.time() - end)
             end = time.time()
-            if args.local_rank == 0 and (last_batch or batch_idx % args.log_interval == 0):
+            if args.local_rank == 0  and args.rank == 0 and (last_batch or batch_idx % args.log_interval == 0):
                 log_name = 'Test' + log_suffix
                 _logger.info(
                     '{0}: [{1:>4d}/{2}]  '
