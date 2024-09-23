@@ -13,4 +13,4 @@ export WORLD_SIZE=$(($SLURM_NNODES * $SLURM_NTASKS_PER_NODE))
 export MASTER_PORT=15771
 export MASTER_ADDR=$(scontrol show hostname $SLURM_NODELIST | head -n 1)
 
-srun python -m torch.distributed.launch --nproc_per_node=$SLURM_NTASKS_PER_NODE --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT --use_env main.py --data_dir /scratch/itee/uqxxu16/data/imagenet --model lvvit_m --batch-size 128 --img-size 224 --drop-path 0.1 --token-label --token-label-data /scratch/itee/uqxxu16/data/tlt/label_top5_train_nfnet/ --token-label-size 14 --model-ema --native-amp --workers=20 --channel_idle --feature_norm=BatchNorm
+srun python -m torch.distributed.launch --nproc_per_node=$SLURM_NTASKS_PER_NODE --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT --use_env main.py --data_dir /scratch/itee/uqxxu16/data/imagenet --model lvvit_s --batch-size 128 --img-size 224 --drop-path 0.1 --token-label --token-label-data /scratch/itee/uqxxu16/data/tlt/label_top5_train_nfnet/ --token-label-size 14 --model-ema --workers=20 --channel_idle --feature_norm=BatchNorm --lr=1e-3
