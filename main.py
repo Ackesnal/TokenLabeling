@@ -442,6 +442,13 @@ def main():
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
     
+    if args.reparam:
+        print("Reparametering the backbone ...")
+        model.reparam()
+        print("...")
+        print("Reparameterization done!")
+
+        
     if args.finetune:
         load_pretrained_weights(model=model,checkpoint_path=args.finetune,use_ema=args.model_ema, strict=False, num_classes=args.num_classes)
 
@@ -534,7 +541,7 @@ def main():
             optimizer=None if args.no_resume_opt else optimizer,
             loss_scaler=None if args.no_resume_opt else loss_scaler,
             log_info=args.local_rank == 0 and args.rank == 0)
-
+            
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None
     if args.model_ema:
@@ -554,7 +561,7 @@ def main():
         else:
             if args.local_rank == 0 and args.rank == 0:
                 _logger.info("Using native Torch DistributedDataParallel.")
-            model = NativeDDP(model, device_ids=[args.local_rank])  # can use device str in Torch >= 1.1
+            model = NativeDDP(model, device_ids=[args.local_rank], find_unused_parameters=True)  # can use device str in Torch >= 1.1
         # NOTE: EMA model does not need to be wrapped by DDP
 
     # setup learning rate schedule and starting epoch
@@ -704,6 +711,7 @@ def main():
     try:
         if args.finetune:
             validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
+            
         for epoch in range(start_epoch, num_epochs):
             if args.distributed and hasattr(loader_train.sampler, 'set_epoch'):
                 loader_train.sampler.set_epoch(epoch)

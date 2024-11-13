@@ -159,6 +159,8 @@ class Mlp(nn.Module):
             
             fc2_bias = self.fc2(-mean/std*weight+bias)
             fc2_weight = self.fc2.weight / std[None, :] * weight[None, :]
+            
+        # del self.fc1, self.fc2, self.norm1, self.norm2
         
         return fc1_bias, fc1_weight, fc2_bias, fc2_weight
         
